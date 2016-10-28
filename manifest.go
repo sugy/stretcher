@@ -75,23 +75,21 @@ func (m *Manifest) Deploy(conf Config) error {
 	defer tmp.Close()
 	defer os.Remove(tmp.Name())
 
+	fetchSrcFunc := m.fetchSrc
 	if conf.Timeout != 0 {
-		log.Printf("Set timeout %s", conf.Timeout)
-		timer := time.NewTimer(conf.Timeout)
-		done := make(chan error)
-		go func() {
-			done <- m.fetchSrc(conf, tmp)
-		}()
-		select {
-		case <-timer.C:
-			return fmt.Errorf("timeout %s reached while fetching src %s", conf.Timeout, m.Src)
-		case err := <-done:
-			if err != nil {
-				return err
+		fetchSrcFunc = m.fetchSrcEnableTimeout
+	}
+
+	if err := fetchSrcFunc(conf, tmp); err != nil {
+		for i := 0; i < conf.Retry; i++ {
+			log.Printf("%s", err)
+			log.Printf("Try again. Waiting: %s", conf.RetryWait)
+			time.Sleep(conf.RetryWait)
+			err = fetchSrcFunc(conf, tmp)
+			if err == nil {
+				break
 			}
 		}
-	} else {
-		err := m.fetchSrc(conf, tmp)
 		if err != nil {
 			return err
 		}
@@ -151,22 +149,28 @@ func (m *Manifest) Deploy(conf Config) error {
 	return nil
 }
 
+func (m *Manifest) fetchSrcEnableTimeout(conf Config, tmp *os.File) error {
+	log.Printf("Set timeout %s", conf.Timeout)
+
+	timer := time.NewTimer(conf.Timeout)
+	done := make(chan error)
+	go func() {
+		done <- m.fetchSrc(conf, tmp)
+	}()
+	select {
+	case <-timer.C:
+		return fmt.Errorf("timeout %s reached while fetching src %s", conf.Timeout, m.Src)
+	case err := <-done:
+		return err
+	}
+	return nil
+}
+
 func (m *Manifest) fetchSrc(conf Config, tmp *os.File) error {
 	begin := time.Now()
 	src, err := getURL(m.Src)
 	if err != nil {
-		for i := 0; i < conf.Retry; i++ {
-			log.Printf("Get src failed: %s", err)
-			log.Printf("Try again. Waiting: %s", conf.RetryWait)
-			time.Sleep(conf.RetryWait)
-			src, err = getURL(m.Src)
-			if err == nil {
-				break
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("Get src failed: %s", err)
-		}
+		return fmt.Errorf("Get src failed: %s", err)
 	}
 	defer src.Close()
 
