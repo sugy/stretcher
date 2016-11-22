@@ -92,6 +92,7 @@ func (m *Manifest) Deploy(conf Config) error {
 	}
 
 	tmp, err := ioutil.TempFile(os.TempDir(), "stretcher")
+	log.Println("tmpfile:", tmp.Name())
 	if err != nil {
 		return err
 	}
@@ -105,6 +106,17 @@ func (m *Manifest) Deploy(conf Config) error {
 			log.Printf("%s", err)
 			log.Printf("Try again. Waiting: %s", conf.RetryWait)
 			time.Sleep(conf.RetryWait)
+
+			tmp.Close()
+			os.Remove(tmp.Name())
+			tmp, err = ioutil.TempFile(os.TempDir(), "stretcher")
+			log.Println("tmpfile:", tmp.Name())
+			if err != nil {
+				return err
+			}
+			defer tmp.Close()
+			defer os.Remove(tmp.Name())
+
 			err = s.fetch(tmp)
 			if err == nil {
 				break
