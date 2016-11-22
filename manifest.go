@@ -184,7 +184,6 @@ func (st *SrcFetcherEnableTimeout) fetch(tmp *os.File) error {
 	case err := <-done:
 		return err
 	}
-	return nil
 }
 
 func (s *SrcFetcher) fetch(tmp *os.File) error {
