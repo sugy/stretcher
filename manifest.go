@@ -33,6 +33,29 @@ type Manifest struct {
 	SyncStrategy string       `yaml:"sync_strategy"`
 }
 
+type SrcFetch interface {
+	fetch(tmp *os.File) error
+}
+
+type SrcFetcher struct {
+	*Manifest
+	MaxBandWidth uint64
+}
+
+type SrcFetcherEnableTimeout struct {
+	*SrcFetcher
+	Timeout time.Duration
+}
+
+func NewSrcFetcher(m *Manifest, conf Config) (SrcFetch, error) {
+	s := &SrcFetcher{Manifest: m, MaxBandWidth: conf.MaxBandWidth}
+	if conf.Timeout != 0 {
+		st := &SrcFetcherEnableTimeout{SrcFetcher: s, Timeout: conf.Timeout}
+		return st, nil
+	}
+	return s, nil
+}
+
 func (m *Manifest) newHash() (hash.Hash, error) {
 	switch len(m.CheckSum) {
 	case 32:
@@ -69,29 +92,36 @@ func (m *Manifest) Deploy(conf Config) error {
 	}
 
 	tmp, err := ioutil.TempFile(os.TempDir(), "stretcher")
+	log.Println("tmpfile:", tmp.Name())
 	if err != nil {
 		return err
 	}
 	defer tmp.Close()
 	defer os.Remove(tmp.Name())
 
-	if conf.Timeout != 0 {
-		log.Printf("Set timeout %s", conf.Timeout)
-		timer := time.NewTimer(conf.Timeout)
-		done := make(chan error)
-		go func() {
-			done <- m.fetchSrc(conf, tmp)
-		}()
-		select {
-		case <-timer.C:
-			return fmt.Errorf("timeout %s reached while fetching src %s", conf.Timeout, m.Src)
-		case err := <-done:
+	s, _ := NewSrcFetcher(m, conf)
+
+	if err := s.fetch(tmp); err != nil {
+		for i := 0; i < conf.Retry; i++ {
+			log.Printf("%s", err)
+			log.Printf("Try again. Waiting: %s", conf.RetryWait)
+			time.Sleep(conf.RetryWait)
+
+			tmp.Close()
+			os.Remove(tmp.Name())
+			tmp, err = ioutil.TempFile(os.TempDir(), "stretcher")
+			log.Println("tmpfile:", tmp.Name())
 			if err != nil {
 				return err
 			}
+			defer tmp.Close()
+			defer os.Remove(tmp.Name())
+
+			err = s.fetch(tmp)
+			if err == nil {
+				break
+			}
 		}
-	} else {
-		err := m.fetchSrc(conf, tmp)
 		if err != nil {
 			return err
 		}
@@ -151,31 +181,38 @@ func (m *Manifest) Deploy(conf Config) error {
 	return nil
 }
 
-func (m *Manifest) fetchSrc(conf Config, tmp *os.File) error {
+func (st *SrcFetcherEnableTimeout) fetch(tmp *os.File) error {
+	log.Printf("Set timeout %s", st.Timeout)
+
+	timer := time.NewTimer(st.Timeout)
+	done := make(chan error)
+	go func() {
+		s := st.SrcFetcher
+		done <- s.fetch(tmp)
+	}()
+	select {
+	case <-timer.C:
+		return fmt.Errorf("timeout %s reached while fetching src %s", st.Timeout, st.Src)
+	case err := <-done:
+		return err
+	}
+}
+
+func (s *SrcFetcher) fetch(tmp *os.File) error {
 	begin := time.Now()
-	src, err := getURL(m.Src)
+	src, err := getURL(s.Src)
 	if err != nil {
-		for i := 0; i < conf.Retry; i++ {
-			log.Printf("Get src failed: %s", err)
-			log.Printf("Try again. Waiting: %s", conf.RetryWait)
-			time.Sleep(conf.RetryWait)
-			src, err = getURL(m.Src)
-			if err == nil {
-				break
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("Get src failed: %s", err)
-		}
+		return fmt.Errorf("Get src failed: %s", err)
 	}
 	defer src.Close()
 
 	lsrc := shapeio.NewReader(src)
-	if conf.MaxBandWidth != 0 {
-		log.Printf("Set max bandwidth %s/sec", humanize.Bytes(uint64(conf.MaxBandWidth)))
-		lsrc.SetRateLimit(float64(conf.MaxBandWidth))
+	if s.MaxBandWidth != 0 {
+		log.Printf("Set max bandwidth %s/sec", humanize.Bytes(uint64(s.MaxBandWidth)))
+		lsrc.SetRateLimit(float64(s.MaxBandWidth))
 	}
 
+	m := s.Manifest
 	written, sum, err := m.copyAndCalcHash(tmp, lsrc)
 	if err != nil {
 		return err

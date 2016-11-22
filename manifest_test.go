@@ -379,8 +379,8 @@ dest: ` + cwd + `/test/dest
 		t.Error(err)
 	}
 	err = m.Deploy(stretcher.Config{
-		Retry:     3,
-		RetryWait: 3 * time.Second,
+		Retry:     2,
+		RetryWait: 1 * time.Second,
 	})
 	if err == nil || strings.Index(err.Error(), "Get src failed:") == -1 {
 		t.Errorf("expect retry got %s", err)
@@ -412,6 +412,39 @@ dest: ` + testDest + `
 	err = m.Deploy(stretcher.Config{
 		MaxBandWidth: bw,
 		Timeout:      time.Duration(2 * time.Second),
+	})
+	if err == nil || strings.Index(err.Error(), "timeout") == -1 {
+		t.Errorf("expect timeout got %s", err)
+	}
+}
+
+func TestDeployManifestRetryTimeout(t *testing.T) {
+	_testDest, _ := ioutil.TempFile(os.TempDir(), "stretcher_dest")
+	testDest := _testDest.Name()
+	os.Remove(testDest)
+	os.Mkdir(testDest, 0755)
+	defer os.RemoveAll(testDest)
+	cwd, _ := os.Getwd()
+	yml := `
+src: file://` + cwd + `/test/test.tar
+checksum: 7b57db167410e46720b1d636ee6cb6c147efac3a
+dest: ` + testDest + `
+`
+	m, err := stretcher.ParseManifest([]byte(yml))
+	if err != nil {
+		t.Error(err)
+	}
+	stat, err := os.Stat(cwd + "/test/test.tar")
+	if err != nil {
+		t.Error(err)
+	}
+	// download will be finished in about 5 seconds
+	bw := uint64(stat.Size()) / 5
+	err = m.Deploy(stretcher.Config{
+		MaxBandWidth: bw,
+		Timeout:      time.Duration(2 * time.Second),
+		Retry:        2,
+		RetryWait:    1 * time.Second,
 	})
 	if err == nil || strings.Index(err.Error(), "timeout") == -1 {
 		t.Errorf("expect timeout got %s", err)
